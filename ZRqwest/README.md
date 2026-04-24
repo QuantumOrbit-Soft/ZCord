@@ -15,23 +15,6 @@ Core ideas:
 
 - Zig `0.16.0`
 
-## Installation
-
-```bash
-zig fetch --save git+https://github.com/Ahegys/zrqwest.git
-```
-
-In `build.zig`:
-
-```zig
-const zrqwest_dep = b.dependency("zrqwest", .{
-    .target = target,
-    .optimize = optimize,
-});
-
-exe.root_module.addImport("zrqwest", zrqwest_dep.module("zrqwest"));
-```
-
 ## Import
 
 ```zig

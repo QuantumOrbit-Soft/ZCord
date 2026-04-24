@@ -1,27 +1,27 @@
 # ZRqwest
 
-Biblioteca utilitária de HTTP para Zig 0.16.
+Utility HTTP client library for Zig 0.16.
 
-O foco da API e simples:
+This README covers the main request API only.
 
-- requests com `get/post/put/patch/delete`
-- headers explicitos
-- resposta raw ou tipada
-- `RequestBuilder` para montagem incremental
+Core ideas:
 
-Esta README cobre so a parte principal de request da lib.
+- fixed request shape with `get/post/put/patch/delete`
+- explicit headers
+- raw or typed responses
+- `RequestBuilder` for incremental request assembly
 
-## Requisitos
+## Requirements
 
 - Zig `0.16.0`
 
-## Instalacao
+## Installation
 
 ```bash
 zig fetch --save git+https://github.com/Ahegys/zrqwest.git
 ```
 
-No `build.zig`:
+In `build.zig`:
 
 ```zig
 const zrqwest_dep = b.dependency("zrqwest", .{
@@ -38,9 +38,9 @@ exe.root_module.addImport("zrqwest", zrqwest_dep.module("zrqwest"));
 const zrqwest = @import("zrqwest");
 ```
 
-## Criando o client
+## Creating the client
 
-Com allocator proprio:
+With your own allocator:
 
 ```zig
 var client: zrqwest.RequestClient = undefined;
@@ -48,14 +48,14 @@ try client.init(allocator);
 defer client.deinit();
 ```
 
-Com `page_allocator`:
+With `page_allocator`:
 
 ```zig
 var client = try zrqwest.RequestClient.new();
 defer client.deinit();
 ```
 
-## GET simples
+## Simple GET
 
 ```zig
 var resp = try client.get(
@@ -69,9 +69,9 @@ std.debug.print("status={d}\n", .{resp.status_code()});
 std.debug.print("body={s}\n", .{resp.body});
 ```
 
-## GET com headers explicitos
+## GET with explicit headers
 
-Os headers sao enviados manualmente. A lib nao tenta abstrair auth.
+Headers are always provided manually. The library does not try to abstract auth.
 
 ```zig
 var resp = try client.get(
@@ -85,7 +85,7 @@ var resp = try client.get(
 defer resp.deinit();
 ```
 
-## Resposta tipada com `.resp`
+## Typed response with `.resp`
 
 ```zig
 const IpResponse = struct {
@@ -102,7 +102,7 @@ defer parsed.deinit();
 std.debug.print("ip={s}\n", .{parsed.value.origin});
 ```
 
-## Resposta tipada com `return_of`
+## Typed response with `return_of`
 
 ```zig
 var parsed = try client.get(
@@ -113,7 +113,7 @@ var parsed = try client.get(
 defer parsed.deinit();
 ```
 
-## POST com JSON
+## POST with JSON
 
 ```zig
 const CreateUserResponse = struct {
@@ -134,9 +134,9 @@ var created = try client.post(
 defer created.deinit();
 ```
 
-## Outros metodos
+## Other methods
 
-O mesmo formato vale para `put`, `patch` e `delete`.
+The same shape applies to `put`, `patch`, and `delete`.
 
 ```zig
 _ = client.put(.url("https://api.example.com/users/1"), .headers(.{}), .{});
@@ -144,11 +144,11 @@ _ = client.patch(.url("https://api.example.com/users/1"), .headers(.{}), .{});
 _ = client.delete(.url("https://api.example.com/users/1"), .headers(.{}), .{});
 ```
 
-## Campos aceitos em `options`
+## Fields accepted in `options`
 
-O terceiro argumento da request e um struct com opcionais.
+The third argument is an options struct.
 
-Campos principais:
+Main fields:
 
 - `.query`
 - `.body`
@@ -167,18 +167,18 @@ Campos principais:
 - `.redirect_policy`
 - `.max_redirects`
 
-Regras importantes:
+Important rules:
 
-- `.url(...)` e `.headers(...)` sao passados fora de `options`
-- `.json` e `.form` sao mutuamente exclusivos
-- `.resp` e `.return_of` sao mutuamente exclusivos
-- `GET` e `DELETE` nao aceitam body
+- `.url(...)` and `.headers(...)` are passed outside `options`
+- `.json` and `.form` are mutually exclusive
+- `.resp` and `.return_of` are mutually exclusive
+- `GET` and `DELETE` do not accept request bodies
 
 ## Response
 
-Quando voce nao usa `.resp` nem `.return_of`, o retorno e `zrqwest.Response`.
+When you do not use `.resp` or `.return_of`, the result type is `zrqwest.Response`.
 
-Helpers principais:
+Main helpers:
 
 - `resp.status_code()`
 - `resp.is_success()`
@@ -190,7 +190,7 @@ Helpers principais:
 
 ## RequestBuilder
 
-Para montar a request por etapas:
+Use `RequestBuilder` when you want to assemble a request step by step.
 
 ```zig
 var rb = zrqwest.request_builder(&client, .POST, "https://api.example.com/users");
@@ -210,7 +210,7 @@ var parsed = try rb.send_json(UserResponse);
 defer parsed.deinit();
 ```
 
-Metodos principais do builder:
+Main builder methods:
 
 - `header(name, value)`
 - `query(.{ ... })`
@@ -228,7 +228,7 @@ Metodos principais do builder:
 - `send()`
 - `send_json(T)`
 
-## Helpers uteis
+## Useful helpers
 
 - `client.scratch_json(payload)`
 - `client.scratch_post_form(payload)`
@@ -236,16 +236,16 @@ Metodos principais do builder:
 - `client.stream(.url(...), .headers(...), .{ ... })`
 - `client.stream_to(.url(...), .headers(...), .{ ... }, writer)`
 
-## Contracts
+## Compile-time contracts
 
-Para extensao aberta em `comptime`:
+For open extension points:
 
 ```zig
 comptime zrqwest.TransportContract.assert(MyTransport);
 comptime zrqwest.CacheContract.assert(MyCache);
 ```
 
-## Testes
+## Tests
 
 ```bash
 zig build

@@ -34,56 +34,17 @@ fn add_project_imports(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) void {
-    const api_module = b.createModule(.{
-        .root_source_file = b.path("src/api/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const constants_module = b.createModule(.{
-        .root_source_file = b.path("src/constants/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const errors_module = b.createModule(.{
-        .root_source_file = b.path("src/errors/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const events_module = b.createModule(.{
-        .root_source_file = b.path("src/events/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const gateway_module = b.createModule(.{
-        .root_source_file = b.path("src/gateway/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     const internal_module = b.createModule(.{
         .root_source_file = b.path("src/internal/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const models_module = b.createModule(.{
-        .root_source_file = b.path("src/models/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const utils_module = b.createModule(.{
-        .root_source_file = b.path("src/utils/mod.zig"),
+    const zrqwest_module = b.createModule(.{
+        .root_source_file = b.path("ZRqwest/src/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    api_module.addImport("errors", errors_module);
-    api_module.addImport("models", models_module);
-
-    root_module.addImport("api", api_module);
-    root_module.addImport("constants", constants_module);
-    root_module.addImport("errors", errors_module);
-    root_module.addImport("events", events_module);
-    root_module.addImport("gateway", gateway_module);
     root_module.addImport("internal", internal_module);
-    root_module.addImport("models", models_module);
-    root_module.addImport("utils", utils_module);
+    root_module.addImport("zrqwest", zrqwest_module);
 }

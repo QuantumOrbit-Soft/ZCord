@@ -1,0 +1,11 @@
+.{
+    .name = .zrqwest,
+    .version = "0.1.0",
+    .fingerprint = 0xbca23b505ab54af7, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .description = "Ergonomic HTTP + WebSocket client for Zig 0.16 with async and typed responses",
+    .license = "MIT",
+    .keywords = .{ "http", "websocket", "json", "async", "client" },
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "src", "README.md" },
+}

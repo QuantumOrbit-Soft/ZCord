@@ -1,0 +1,44 @@
+pub const RequestClient = @import("zrqwest").RequestClient;
+pub const DiscordConfig = @import("config.zig").DiscordConfig;
+pub const DiscordResult = @import("result.zig").DiscordResult;
+pub const DiscordHttpClient = @import("http_client.zig").DiscordHttpClient;
+pub const DiscordClient = @import("client.zig").DiscordClient;
+pub const DiscordContext = @import("client.zig").DiscordContext;
+pub const Event = @import("client.zig").Event;
+pub const EventCallback = @import("client.zig").EventCallback;
+pub const GatewayClient = @import("gateway_client.zig").GatewayClient;
+pub const GatewayIntents = GatewayClient.Intents;
+pub const GatewayEvent = GatewayClient.GatewayEvent;
+pub const ReadyEvent = GatewayClient.ReadyEvent;
+pub const MessageCreateEvent = GatewayClient.MessageCreateEvent;
+pub const MessageReactionEvent = GatewayClient.MessageReactionEvent;
+pub const MessageReactionAddEvent = GatewayClient.MessageReactionAddEvent;
+pub const ChannelEvent = GatewayClient.ChannelEvent;
+pub const ChannelAction = GatewayClient.ChannelAction;
+pub const ChannelPinsUpdateEvent = GatewayClient.ChannelPinsUpdateEvent;
+pub const VoiceEvent = GatewayClient.VoiceEvent;
+pub const VoiceAction = GatewayClient.VoiceAction;
+pub const VoiceStateEvent = GatewayClient.VoiceStateEvent;
+pub const VoiceServerUpdateEvent = GatewayClient.VoiceServerUpdateEvent;
+pub const SlashCommandEvent = GatewayClient.SlashCommandEvent;
+pub const ComponentEvent = GatewayClient.ComponentEvent;
+pub const ModalSubmitEvent = GatewayClient.ModalSubmitEvent;
+pub const ReactionAction = GatewayClient.ReactionAction;
+
+test {
+    _ = @import("authorization_header.zig");
+    _ = @import("base_url.zig");
+    _ = @import("config.zig");
+    _ = @import("result.zig");
+    _ = @import("http_headers.zig");
+    _ = @import("http_request_context.zig");
+    _ = @import("interaction_data.zig");
+    _ = @import("json_body.zig");
+    _ = @import("request_url.zig");
+    _ = @import("response_body_guard.zig");
+    _ = @import("user_agent_header.zig");
+    _ = @import("http_client.zig");
+    _ = @import("client.zig");
+    _ = @import("gateway_client.zig");
+    _ = @import("gateway_protocol.zig");
+}

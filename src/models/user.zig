@@ -1,0 +1,18 @@
+id: []const u8,
+username: []const u8 = "",
+global_name: ?[]const u8 = null,
+discriminator: []const u8 = "",
+avatar: ?[]const u8 = null,
+bot: ?bool = null,
+system: ?bool = null,
+mfa_enabled: ?bool = null,
+banner: ?[]const u8 = null,
+accent_color: ?u32 = null,
+locale: ?[]const u8 = null,
+verified: ?bool = null,
+email: ?[]const u8 = null,
+flags: ?u32 = null,
+premium_type: ?u32 = null,
+public_flags: ?u32 = null,
+
+pub const User = @This();

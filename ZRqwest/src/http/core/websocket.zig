@@ -184,17 +184,15 @@ const HandshakeKeys = struct {
     websocket_key: []const u8 = &.{},
     expected_accept: []const u8 = &.{},
 
-    fn init() HandshakeKeys {
-        var keys: HandshakeKeys = .{};
+    fn init(self: *HandshakeKeys) void {
         var random_key: [16]u8 = undefined;
         std.Options.debug_io.random(&random_key);
 
-        keys.websocket_key = encode_base64_fixed(&keys.websocket_key_buf, &random_key);
-        keys.expected_accept = websocket_accept_from_key(
-            keys.websocket_key,
-            &keys.expected_accept_buf,
+        self.websocket_key = encode_base64_fixed(&self.websocket_key_buf, &random_key);
+        self.expected_accept = websocket_accept_from_key(
+            self.websocket_key,
+            &self.expected_accept_buf,
         );
-        return keys;
     }
 };
 
@@ -225,7 +223,8 @@ pub fn connect(
     defer self.http_client.read_buffer_size = previous_read_buffer_size;
 
     const sender_fields = try connect_handshake_fields(headers_arg, options);
-    const handshake_keys = HandshakeKeys.init();
+    var handshake_keys: HandshakeKeys = .{};
+    handshake_keys.init();
 
     var extra_headers = try self.build_extra_handshake_headers(
         sender_fields.user_headers,

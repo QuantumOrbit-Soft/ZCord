@@ -1,17 +1,16 @@
 const std = @import("std");
 
-pub const Env = @This();
+pub const file_bytes_max: u32 = 64 * 1024;
+
+allocator: std.mem.Allocator,
+map: std.process.Environ.Map,
 
 pub const load_text_error = std.mem.Allocator.Error || parse_error;
 pub const load_file_error = std.Io.Dir.ReadFileAllocError || load_text_error;
 pub const get_required_error = error{MissingEnvironmentVariable};
 pub const parse_error = error{ InvalidEnvironmentLine, MissingEnvironmentKey };
 
-pub const file_bytes_max: u32 = 64 * 1024;
-
-allocator: std.mem.Allocator,
-map: std.process.Environ.Map,
-
+pub const Env = @This();
 const Self = @This();
 
 pub fn init(self: *Self, allocator: std.mem.Allocator) void {
@@ -51,7 +50,10 @@ test "Env.load_file parses simple dotenv file" {
 
     try env.load_dir_file(temp_dir.dir, std.testing.io, ".env");
 
-    try std.testing.expectEqualStrings("abc123", env.get_required("DISCORD_TOKEN") catch unreachable);
+    try std.testing.expectEqualStrings(
+        "abc123",
+        env.get_required("DISCORD_TOKEN") catch unreachable,
+    );
     try std.testing.expectEqualStrings(
         "https://discord.com/api/v10",
         env.get_required("API_BASE") catch unreachable,
@@ -72,7 +74,10 @@ test "Env.load_file ignores comments and trims whitespace" {
         \\SINGLE = 'world'
     );
 
-    try std.testing.expectEqualStrings("abc123", env.get_required("DISCORD_TOKEN") catch unreachable);
+    try std.testing.expectEqualStrings(
+        "abc123",
+        env.get_required("DISCORD_TOKEN") catch unreachable,
+    );
     try std.testing.expectEqualStrings("", env.get("EMPTY_VALUE") orelse unreachable);
     try std.testing.expectEqualStrings("hello", env.get("QUOTED") orelse unreachable);
     try std.testing.expectEqualStrings("world", env.get("SINGLE") orelse unreachable);

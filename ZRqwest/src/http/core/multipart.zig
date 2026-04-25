@@ -1,19 +1,12 @@
 const std = @import("std");
 
-/// A single part of a multipart/form-data request body.
 pub const Part = struct {
-    /// Form field name (Content-Disposition name parameter).
     name: []const u8,
-    /// Optional filename — set to non-null for file uploads.
     filename: ?[]const u8 = null,
-    /// MIME type of this part (e.g. "image/png", "text/plain").
     content_type: []const u8 = "application/octet-stream",
-    /// Raw bytes of this part's body.
     data: []const u8,
 };
 
-/// Fills `buf` with 16 random hex bytes and returns a slice into it.
-/// `buf` must be at least 32 bytes long.
 pub fn generate_boundary(buf: *[32]u8) []const u8 {
     var rand_bytes: [16]u8 = undefined;
     std.Options.debug_io.random(&rand_bytes);
@@ -25,19 +18,6 @@ pub fn generate_boundary(buf: *[32]u8) []const u8 {
     return buf[0..32];
 }
 
-/// Builds a `multipart/form-data` body from `parts` using `boundary`.
-///
-/// The returned slice is owned by the caller and must be freed with `allocator.free()`.
-///
-/// Typical usage:
-/// ```zig
-/// var boundary_buf: [32]u8 = undefined;
-/// const boundary = multipart.generate_boundary(&boundary_buf);
-/// const body = try multipart.build(allocator, &.{
-///     .{ .name = "file", .filename = "hello.txt", .content_type = "text/plain", .data = "hello" },
-/// }, boundary);
-/// defer allocator.free(body);
-/// ```
 pub fn build(
     allocator: std.mem.Allocator,
     parts: []const Part,
@@ -104,7 +84,6 @@ test "build: multiple parts with filename" {
     );
     try std.testing.expect(std.mem.indexOf(u8, body, "Content-Type: image/png") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\x89PNG") != null);
-    // Two delimiters + closing delimiter
     try std.testing.expect(std.mem.count(u8, body, "--boundary999") == 3);
 }
 

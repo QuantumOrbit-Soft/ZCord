@@ -1,11 +1,5 @@
 const std = @import("std");
 
-/// Thread-safe cookie storage for HTTP requests.
-///
-/// Stores name=value pairs and automatically injects them into outgoing
-/// requests and updates them from `Set-Cookie` response headers.
-///
-/// Enable on a `RequestClient` with `client.enable_cookies()`.
 pub const CookieJar = struct {
     cookies: std.StringHashMap([]u8),
     allocator: std.mem.Allocator,
@@ -18,7 +12,6 @@ pub const CookieJar = struct {
         header_value: ?[]u8,
     };
 
-    /// Creates a new empty CookieJar backed by `allocator`.
     pub fn init(allocator: std.mem.Allocator) CookieJar {
         return .{
             .cookies = std.StringHashMap([]u8).init(allocator),
@@ -26,7 +19,6 @@ pub const CookieJar = struct {
         };
     }
 
-    /// Frees all stored cookies and the underlying map.
     pub fn deinit(self: *CookieJar) void {
         self.mutex.lockUncancelable(std.Options.debug_io);
         defer self.mutex.unlock(std.Options.debug_io);
@@ -39,7 +31,6 @@ pub const CookieJar = struct {
         self.cookies.deinit();
     }
 
-    /// Stores or replaces a cookie. Both `name` and `value` are copied.
     pub fn set(self: *CookieJar, name: []const u8, value: []const u8) !void {
         self.mutex.lockUncancelable(std.Options.debug_io);
         defer self.mutex.unlock(std.Options.debug_io);
@@ -49,7 +40,6 @@ pub const CookieJar = struct {
         const owned_value = try self.allocator.dupe(u8, value);
         errdefer self.allocator.free(owned_value);
 
-        // Free old entry if present
         if (self.cookies.fetchRemove(owned_name)) |old| {
             self.allocator.free(old.key);
             self.allocator.free(old.value);
@@ -59,15 +49,12 @@ pub const CookieJar = struct {
         self.version +%= 1;
     }
 
-    /// Returns the value for `name`, or null if not set.
-    /// The returned slice is valid until the next `set`, `clear`, or `deinit`.
     pub fn get(self: *CookieJar, name: []const u8) ?[]const u8 {
         self.mutex.lockUncancelable(std.Options.debug_io);
         defer self.mutex.unlock(std.Options.debug_io);
         return self.cookies.get(name);
     }
 
-    /// Removes all stored cookies.
     pub fn clear(self: *CookieJar) void {
         self.mutex.lockUncancelable(std.Options.debug_io);
         defer self.mutex.unlock(std.Options.debug_io);
@@ -83,9 +70,6 @@ pub const CookieJar = struct {
         self.version +%= 1;
     }
 
-    /// Builds a `Cookie` header value: `"name1=val1; name2=val2"`.
-    /// Returns an owned slice — caller must free with the same `allocator`.
-    /// Returns null (and does not allocate) when the jar is empty.
     pub fn build_header(self: *CookieJar, allocator: std.mem.Allocator) !?[]u8 {
         self.mutex.lockUncancelable(std.Options.debug_io);
         defer self.mutex.unlock(std.Options.debug_io);
@@ -150,12 +134,7 @@ pub const CookieJar = struct {
         };
     }
 
-    /// Parses a `Set-Cookie` header value and stores the name=value pair.
-    ///
-    /// Handles `name=value; Path=/; HttpOnly; ...` — only the first `name=value`
-    /// pair is stored; attributes (Path, Expires, HttpOnly, Secure) are ignored.
     pub fn update_from_set_cookie(self: *CookieJar, set_cookie: []const u8) !void {
-        // Set-Cookie: name=value; attr1; attr2=val
         const first = std.mem.sliceTo(set_cookie, ';');
         const trimmed = std.mem.trim(u8, first, " \t");
         const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return;

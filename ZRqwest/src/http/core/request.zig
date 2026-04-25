@@ -19,8 +19,6 @@ const sync_io = std.Options.debug_io;
 
 allocator: std.mem.Allocator = undefined,
 http_client: std.http.Client = undefined,
-/// Optional cookie jar for automatic injection into outgoing requests.
-/// Enable with `client.enable_cookies()`.
 cookie_jar: ?cookie_jar_mod.CookieJar = null,
 cached_cookie_header_value: ?[]u8 = null,
 cached_cookie_header_version: u64 = 0,
@@ -31,8 +29,6 @@ default_request_retry_backoff_ms: u64 = default_retry_backoff_ms,
 default_request_retry_max_backoff_ms: u64 = default_retry_max_backoff_ms,
 default_request_redirect_policy: RedirectPolicy = .follow,
 default_request_max_redirects: u16 = default_max_redirects,
-/// Serializes request execution per client instance to avoid races when the
-/// legacy async API runs requests on shared background workers.
 request_execution_mutex: std.Io.Mutex = .init,
 
 pub const RedirectPolicy = enum {
@@ -164,14 +160,6 @@ pub const HeadersArg = struct {
     }
 };
 
-/// A handle to a background HTTP request running in the shared async executor.
-///
-/// IMPORTANT: All slices inside the request arguments and options (url, header
-/// values, json body strings, etc.) must remain valid until `.await()` returns,
-/// because background workers access them.
-/// The client instance used to spawn the task must also remain valid.
-///
-/// Call `.await()` exactly once to collect the result and free internal state.
 pub fn async_task(comptime ResultType: type) type {
     return struct {
         const TaskSelf = @This();
@@ -192,8 +180,6 @@ pub fn async_task(comptime ResultType: type) type {
             }
         };
 
-        /// Internal state: either work is queued/running or enqueue failed.
-        /// Errors during enqueue are surfaced lazily in `.await()`.
         const Inner = union(enum) {
             running: struct {
                 shared: *Shared,
@@ -203,8 +189,6 @@ pub fn async_task(comptime ResultType: type) type {
 
         inner: Inner,
 
-        /// Blocks until the background request finishes, returns the result,
-        /// and frees internal state. Must be called exactly once.
         pub fn await(self: TaskSelf) anyerror!ResultType {
             switch (self.inner) {
                 .running => |r| {
@@ -332,19 +316,12 @@ pub fn build_query(self: *Self, base_url: []const u8, query: anytype) QueryError
     return query_builder.build(self.allocator, base_url, query);
 }
 
-/// Enables the cookie jar so cookies are automatically injected into outgoing
-/// requests via the `Cookie:` header. Add cookies with `client.cookie_jar.?.set(name, value)`.
-///
-/// Note: `Set-Cookie` response headers are not automatically parsed because the
-/// underlying `std.http.Client.fetch()` does not expose them. Parse them manually
-/// with `client.cookie_jar.?.update_from_set_cookie(header_value)` if needed.
 pub fn enable_cookies(self: *Self) !void {
     if (self.cookie_jar != null) return;
     self.cookie_jar = cookie_jar_mod.CookieJar.init(self.allocator);
     self.clear_cookie_header_cache();
 }
 
-/// Disables the cookie jar and frees all stored cookies.
 pub fn disable_cookies(self: *Self) void {
     if (self.cookie_jar) |*jar| jar.deinit();
     self.cookie_jar = null;
@@ -494,10 +471,6 @@ fn request(self: *Self, method: std.http.Method, sender: anytype) !Response {
     }, retry_options);
 }
 
-/// Executes a request immediately on the current thread.
-///
-/// Use this when async thread spawning is not desired (for example,
-/// in builder-based flows that already run in user-controlled control flow).
 pub fn send_now(
     self: *Self,
     method: std.http.Method,
@@ -647,11 +620,6 @@ pub fn get(
     return spawn_async_with_args(self, .GET, request_arg, headers_arg, options);
 }
 
-/// Sends a POST request in a background thread.
-/// Returns an `async_task`; call `.await()` to block and collect the result.
-///
-/// All slices in the arguments and options (url, body strings) must stay valid
-/// until `.await()` returns.
 pub fn post(
     self: *Self,
     request_arg: RequestArg,
@@ -1498,10 +1466,6 @@ fn increment_queue_index(index: u16) u16 {
     return index + 1;
 }
 
-/// Queues request execution on the shared async worker pool.
-///
-/// Never fails: if allocation or enqueue fails, the error is stored inside
-/// the returned `async_task` and surfaces when `.await()` is called.
 fn spawn_async(
     self: *Self,
     method: std.http.Method,
@@ -1614,24 +1578,12 @@ fn spawn_async_with_args(
     return .{ .inner = .{ .running = .{ .shared = shared } } };
 }
 
-/// A buffered response reader returned by `RequestClient.stream()`.
-///
-/// The full response body is collected before this is returned.
-/// Use `.read(buf)` to consume it incrementally, or access `.body` directly.
-///
-/// Note: This is a buffered interface — the entire body is fetched before reading
-/// begins. For true HTTP streaming, use `stream_to(.url(...), .headers(...), .{ ... }, writer)`.
-///
-/// Always call `.deinit()` when done.
 pub const StreamReader = struct {
-    /// The full response body. Valid until `.deinit()` is called.
     body: []u8,
     index: usize = 0,
     allocator: std.mem.Allocator,
     status: std.http.Status,
 
-    /// Reads up to `buf.len` bytes from the remaining body into `buf`.
-    /// Returns the number of bytes written (0 means EOF).
     pub fn read(self: *StreamReader, buf: []u8) usize {
         const remaining = self.body[self.index..];
         if (remaining.len == 0) return 0;
@@ -1641,30 +1593,21 @@ pub const StreamReader = struct {
         return n;
     }
 
-    /// Returns the HTTP status code of the response.
     pub fn status_code(self: StreamReader) u16 {
         return @intCast(@intFromEnum(self.status));
     }
 
-    /// Returns true if the HTTP status code is in the 2xx range.
     pub fn is_success(self: StreamReader) bool {
         const code = self.status_code();
         return code >= 200 and code < 300;
     }
 
-    /// Frees the internal body buffer. Must be called exactly once.
     pub fn deinit(self: *StreamReader) void {
         self.allocator.free(self.body);
         self.* = undefined;
     }
 };
 
-/// Performs a real streaming GET and writes bytes directly to `writer`.
-///
-/// Unlike `stream()`, this path does not buffer the entire response body in memory.
-///
-/// Accepts the same fixed request arguments as `get()`.
-/// Returns the final HTTP status.
 pub fn stream_to(
     self: *Self,
     request_arg: RequestArg,
@@ -1675,12 +1618,6 @@ pub fn stream_to(
     return self.request_stream_to_with_args(.GET, request_arg, headers_arg, options, writer);
 }
 
-/// Performs a GET request and returns a `StreamReader` for incremental body access.
-///
-/// Accepts the same fixed request arguments as `get()`.
-/// The full response body is buffered internally before returning.
-///
-/// Caller must call `.deinit()` on the returned reader.
 pub fn stream(
     self: *Self,
     request_arg: RequestArg,
@@ -1738,9 +1675,7 @@ const PreparedBody = struct {
     body: ?[]const u8 = null,
     owned_body: ?[]u8 = null,
     default_headers: []const std.http.Header = empty_headers,
-    /// Owned header slice for dynamic headers (e.g. multipart Content-Type).
     owned_headers: ?[]std.http.Header = null,
-    /// Owned Content-Type value string (e.g. "multipart/form-data; boundary=...").
     owned_ct_value: ?[]u8 = null,
 
     fn deinit(self: *PreparedBody, allocator: std.mem.Allocator) void {
@@ -2017,7 +1952,6 @@ test "StreamReader read() and deinit()" {
     try std.testing.expectEqual(@as(usize, 3), n3);
     try std.testing.expectEqualStrings("ld!", buf[0..n3]);
 
-    // EOF
     const n4 = sr.read(&buf);
     try std.testing.expectEqual(@as(usize, 0), n4);
 }
@@ -2085,7 +2019,6 @@ test "enable_cookies/disable_cookies lifecycle" {
     try std.testing.expect(client.cookie_jar == null);
     try client.enable_cookies();
     try std.testing.expect(client.cookie_jar != null);
-    // Double-enable is a no-op
     try client.enable_cookies();
     try std.testing.expect(client.cookie_jar != null);
     client.disable_cookies();
@@ -2538,8 +2471,6 @@ test "async get uses caller client allocator and cookie state" {
     try client.enable_cookies();
     try client.cookie_jar.?.set("session", "abc123");
 
-    // Fail the next allocation. With caller-client async semantics, cookie
-    // header generation runs through this allocator and must surface OOM.
     failing_allocator_state.fail_index = failing_allocator_state.alloc_index;
 
     const result = client.get(.url("http://127.0.0.1:1"), .headers(.{}), .{}).await();
@@ -2694,7 +2625,6 @@ test "post returns async_task with await method" {
             ),
         );
         if (!@hasField(Task, "inner")) @compileError("async_task deve ter campo inner");
-        // "await" e um nome valido para o metodo.
         if (!@hasDecl(Task, "await")) @compileError("async_task deve ter metodo await");
     }
 

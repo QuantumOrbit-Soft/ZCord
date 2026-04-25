@@ -10,7 +10,8 @@ leveraging Zig's safety features and low-level control.
 
 ## Features
 
-- **REST-first API**: Resources for users, channels, messages, and slash commands
+- **Gateway Bot API**: Register typed callbacks with `discord.on`
+- **REST Resources**: Users, channels, messages, reactions, and slash commands
 - **Type Safe**: Discord payloads are parsed into explicit Zig model types
 - **Explicit Ownership**: Results own parsed JSON/error bodies and expose `deinit`
 - **Bounded Routes**: Route builders write into caller-provided buffers
@@ -29,7 +30,298 @@ src/
   testing/    architecture and public-contract tests
 ```
 
-## Basic Usage
+## Quick Start: Minimal Bot
+
+Most bots start with the Gateway, not with a REST request. The Gateway keeps a WebSocket open and
+calls your functions when Discord sends events.
+
+```zig
+const std = @import("std");
+const zcord = @import("ZCord");
+
+const Bot = struct {
+    pub fn on_ready(ctx: zcord.DiscordContext) void {
+        const ready = ctx.ready() orelse return;
+        std.debug.print("logged in as {s}\n", .{ready.user.username});
+    }
+
+    pub fn on_message(ctx: zcord.DiscordContext) void {
+        const message = ctx.message() orelse return;
+
+        if (std.mem.eql(u8, message.content, "!ping")) {
+            ctx.reply("pong") catch return;
+        }
+    }
+};
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    var request_client: zcord.RequestClient = undefined;
+    try request_client.init(allocator);
+    defer request_client.deinit();
+
+    var discord: zcord.DiscordClient = undefined;
+    try discord.init(.{
+        .allocator = allocator,
+        .client = &request_client,
+        .token = "your-bot-token",
+    });
+    defer discord.deinit();
+
+    discord.on(Bot.on_ready, .OnReady);
+    discord.on(Bot.on_message, .OnMessage);
+
+    try discord.run_gateway(.{
+        .intents = zcord.GatewayIntents.message_events,
+    });
+}
+```
+
+When this is running, send `!ping` in a channel where the bot can read messages. The bot replies
+with `pong`.
+
+Message content requires the Message Content privileged intent to be enabled for your bot in the
+Discord Developer Portal.
+
+## How `discord.on` Works
+
+`discord.on(callback, event)` registers one function for one Gateway event. Every callback receives
+a `zcord.DiscordContext`. The context lets you read the typed event payload and reply when the
+event supports replies.
+
+```zig
+discord.on(Bot.on_ready, .OnReady);
+discord.on(Bot.on_event, .OnEvent);
+discord.on(Bot.on_message, .OnMessage);
+discord.on(Bot.on_reaction, .OnReaction);
+discord.on(Bot.on_channel, .OnChannel);
+discord.on(Bot.on_voice, .OnVoice);
+discord.on(Bot.on_slash_command, .OnSlashCommand);
+discord.on(Bot.on_component, .OnComponent);
+discord.on(Bot.on_modal_submit, .OnModalSubmit);
+```
+
+The callback signature is always:
+
+```zig
+pub fn callback_name(ctx: zcord.DiscordContext) void {
+    // Read ctx and do work.
+}
+```
+
+The SDK runs callbacks on its callback runtime, so a slow command should not block the Gateway read
+loop. Still keep callback work bounded and handle errors explicitly.
+
+### OnReady
+
+Runs once after Discord accepts the Gateway session. Use it for logs or startup state.
+
+```zig
+pub fn on_ready(ctx: zcord.DiscordContext) void {
+    const ready = ctx.ready() orelse return;
+    std.debug.print("ready: {s} ({s})\n", .{ ready.user.username, ready.user.id });
+}
+```
+
+### OnEvent
+
+Runs for every raw Gateway dispatch event before the typed callback. Use it for logs, metrics, or
+debugging event flow.
+
+```zig
+pub fn on_event(ctx: zcord.DiscordContext) void {
+    const event = switch (ctx.payload) {
+        .OnEvent => |value| value,
+        else => return,
+    };
+
+    std.debug.print("event: {s}\n", .{event.name});
+}
+```
+
+### OnMessage
+
+Runs when a message is created. Use `ctx.message()` to read it, then `ctx.reply()` or
+`ctx.send_rich()` to answer.
+
+```zig
+pub fn on_message(ctx: zcord.DiscordContext) void {
+    const message = ctx.message() orelse return;
+
+    if (std.mem.eql(u8, message.content, "!ping")) {
+        ctx.reply("pong") catch |err| {
+            std.debug.print("reply failed: {s}\n", .{@errorName(err)});
+        };
+    }
+}
+```
+
+### OnReaction
+
+Runs when a reaction is added or removed. Check `event.action` to know which happened.
+
+```zig
+pub fn on_reaction(ctx: zcord.DiscordContext) void {
+    const reaction = ctx.reaction() orelse return;
+
+    std.debug.print("reaction {s} on message {s}\n", .{
+        @tagName(reaction.action),
+        reaction.message_id,
+    });
+}
+```
+
+### OnChannel
+
+Runs for channel create, update, delete, and pins update events.
+
+```zig
+pub fn on_channel(ctx: zcord.DiscordContext) void {
+    const event = ctx.channel() orelse return;
+
+    if (event.channel_id()) |channel_id| {
+        std.debug.print("channel {s}: {s}\n", .{
+            @tagName(event.action),
+            channel_id,
+        });
+    }
+}
+```
+
+### OnVoice
+
+Runs for voice state and voice server events. Use this for join/leave/mute style bot logic.
+
+```zig
+pub fn on_voice(ctx: zcord.DiscordContext) void {
+    const event = ctx.voice() orelse return;
+
+    if (event.guild_id()) |guild_id| {
+        std.debug.print("voice {s} in guild {s}\n", .{
+            @tagName(event.action),
+            guild_id,
+        });
+    }
+}
+```
+
+### OnSlashCommand
+
+Runs when a slash command interaction arrives. Slash commands must be registered before users can
+call them; see `examples/main.zig` for a complete `/zcord` registration.
+
+```zig
+pub fn on_slash_command(ctx: zcord.DiscordContext) void {
+    const command = ctx.slash_command() orelse return;
+
+    if (std.mem.eql(u8, command.name, "ping")) {
+        ctx.interaction_reply(.{
+            .content = "pong from slash command",
+        }) catch return;
+    }
+}
+```
+
+Slash command options are available through typed helpers:
+
+```zig
+const text = ctx.option_string("text") orelse "(empty)";
+const count = ctx.option_integer("count") orelse 0;
+const enabled = ctx.option_boolean("enabled") orelse false;
+const user_id = ctx.option_user_id("user");
+```
+
+### OnComponent
+
+Runs when a user clicks a button or uses another message component. Use `custom_id` to route the
+button.
+
+```zig
+pub fn on_component(ctx: zcord.DiscordContext) void {
+    const component = ctx.component() orelse return;
+
+    if (std.mem.eql(u8, component.custom_id, "open_modal")) {
+        show_feedback_modal(ctx);
+        return;
+    }
+
+    ctx.interaction_reply(.{
+        .content = "button clicked",
+        .flags = 64, // Ephemeral message.
+    }) catch return;
+}
+```
+
+### OnModalSubmit
+
+Runs when a modal is submitted. Read text inputs with `ctx.modal_field(custom_id)`.
+
+```zig
+pub fn on_modal_submit(ctx: zcord.DiscordContext) void {
+    const modal = ctx.modal_submit() orelse return;
+    if (!std.mem.eql(u8, modal.custom_id, "feedback_modal")) return;
+
+    const feedback = ctx.modal_field("feedback") orelse "(empty)";
+    var buffer: [256]u8 = undefined;
+    const response = std.fmt.bufPrint(
+        buffer[0..],
+        "feedback received: {s}",
+        .{feedback},
+    ) catch "feedback received";
+
+    ctx.interaction_reply(.{
+        .content = response,
+        .flags = 64,
+    }) catch return;
+}
+```
+
+Modal creation can happen from a component or slash command interaction:
+
+```zig
+fn show_feedback_modal(ctx: zcord.DiscordContext) void {
+    const Modals = zcord.SlashCommandsResource.Modals;
+
+    const input = Modals.with_required(
+        Modals.text_input("feedback", "Feedback", .paragraph),
+        true,
+    );
+    const inputs = [_]zcord.SlashCommandsResource.TextInput{input};
+    const rows = [_]zcord.SlashCommandsResource.TextInputRow{
+        Modals.row(inputs[0..]),
+    };
+
+    ctx.show_modal(.{
+        .custom_id = "feedback_modal",
+        .title = "Send feedback",
+        .components = rows[0..],
+    }) catch return;
+}
+```
+
+## Gateway Intents
+
+Pass the intents your bot needs to `run_gateway`.
+
+```zig
+try discord.run_gateway(.{
+    .intents = zcord.GatewayIntents.message_events |
+        zcord.GatewayIntents.voice_events |
+        zcord.GatewayIntents.channel_events,
+});
+```
+
+Common choices:
+
+- `zcord.GatewayIntents.message_events`: messages and reactions
+- `zcord.GatewayIntents.channel_events`: channel lifecycle events
+- `zcord.GatewayIntents.voice_events`: voice state/server events
+
+## Optional: REST Request
+
+REST resources are still useful for setup tasks, message creation, command registration, and
+fetching Discord objects. This example only checks the current bot user:
 
 ```zig
 const std = @import("std");
@@ -97,38 +389,10 @@ After the REST checks, the sample opens the Gateway. Stop it with `Ctrl+C`.
 Plain `!zcord` and `!zcord rich` both send a rich message with buttons; the modal opens from the
 button because Discord modals must be sent as interaction responses.
 
-The sample registers `on_ready`, `on_event`, `on_message`, `on_reaction`, `on_slash_command`,
-`on_component`, and `on_modal_submit` callbacks. The reaction callback receives both add and
-remove events through `MessageReactionEvent.action`. Message content requires the Message Content
-privileged intent to be enabled for your bot in the Discord Developer Portal.
-
-Gateway callbacks are registered by event:
-
-```zig
-discord.on(SampleBot.on_message, .OnMessage);
-discord.on(SampleBot.on_reaction, .OnReaction);
-discord.on(SampleBot.on_slash_command, .OnSlashCommand);
-discord.on(SampleBot.on_component, .OnComponent);
-discord.on(SampleBot.on_modal_submit, .OnModalSubmit);
-
-try discord.run_gateway(.{
-    .intents = zcord.GatewayIntents.message_events,
-});
-```
-
-With Gateway enabled, send `!zcord ping` or `!zcord rich` in the test channel. The rich message
-contains a button that opens a modal, exercising component and modal callbacks.
-
-Slash command handlers can reply or open modals through the context:
-
-```zig
-pub fn on_slash_command(ctx: zcord.DiscordContext) void {
-    const event = ctx.slash_command() orelse return;
-    if (std.mem.eql(u8, event.name, "ping")) {
-        ctx.interaction_reply(.{ .content = "pong" }) catch return;
-    }
-}
-```
+The sample registers all currently supported callback groups: ready, raw event, message, reaction,
+channel, voice, slash command, component, and modal submit. With Gateway enabled, send
+`!zcord ping` or `!zcord rich` in the test channel. The rich message contains buttons and a modal,
+exercising component and modal callbacks.
 
 ## Installation
 

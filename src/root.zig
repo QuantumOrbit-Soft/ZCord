@@ -1,0 +1,54 @@
+const discord = @import("discord/mod.zig");
+const models = @import("models/mod.zig");
+const resources = @import("resources/mod.zig");
+
+pub const DiscordConfig = discord.DiscordConfig;
+pub const DiscordResult = discord.DiscordResult;
+pub const RequestClient = discord.RequestClient;
+pub const DiscordHttpClient = discord.DiscordHttpClient;
+pub const DiscordClient = discord.DiscordClient;
+pub const DiscordContext = discord.DiscordContext;
+pub const Event = discord.Event;
+pub const EventCallback = discord.EventCallback;
+pub const GatewayClient = discord.GatewayClient;
+pub const GatewayIntents = discord.GatewayIntents;
+pub const GatewayEvent = discord.GatewayEvent;
+pub const ReadyEvent = discord.ReadyEvent;
+pub const MessageCreateEvent = discord.MessageCreateEvent;
+pub const MessageReactionEvent = discord.MessageReactionEvent;
+pub const MessageReactionAddEvent = discord.MessageReactionAddEvent;
+pub const ChannelEvent = discord.ChannelEvent;
+pub const ChannelAction = discord.ChannelAction;
+pub const ChannelPinsUpdateEvent = discord.ChannelPinsUpdateEvent;
+pub const VoiceEvent = discord.VoiceEvent;
+pub const VoiceAction = discord.VoiceAction;
+pub const VoiceStateEvent = discord.VoiceStateEvent;
+pub const VoiceServerUpdateEvent = discord.VoiceServerUpdateEvent;
+pub const SlashCommandEvent = discord.SlashCommandEvent;
+pub const ComponentEvent = discord.ComponentEvent;
+pub const ModalSubmitEvent = discord.ModalSubmitEvent;
+pub const ReactionAction = discord.ReactionAction;
+pub const User = models.User;
+pub const Channel = models.Channel;
+pub const Message = models.Message;
+pub const Types = models.Types;
+pub const Embed = models.Embed;
+pub const EmbedField = models.EmbedField;
+pub const Emoji = models.Emoji;
+pub const Button = models.Button;
+pub const ActionRow = models.ActionRow;
+pub const ButtonStyle = models.ButtonStyle;
+pub const ApplicationCommand = models.ApplicationCommand;
+pub const UsersResource = resources.UsersResource;
+pub const ChannelsResource = resources.ChannelsResource;
+pub const MessagesResource = resources.MessagesResource;
+pub const SlashCommandsResource = resources.SlashCommandsResource;
+
+test {
+    _ = @import("discord/mod.zig");
+    _ = @import("internal").Env;
+    _ = @import("models/mod.zig");
+    _ = @import("routes/mod.zig");
+    _ = @import("resources/mod.zig");
+    _ = @import("testing/client_architecture_test.zig");
+}

@@ -1,12 +1,12 @@
 # ZCord
 
-A modern, high-performance Discord bot library for Zig.
+A modern Discord bot library for Zig.
 
 ## Overview
 
-ZCord is a Zig library for building fast, efficient Discord bots. Designed with simplicity and
-performance in mind, ZCord provides an ergonomic API for interacting with the Discord API while
-leveraging Zig's safety features and low-level control.
+ZCord is a Zig library for building Discord bots. Designed with simplicity and clarity in mind,
+ZCord provides an ergonomic API for interacting with the Discord API while leveraging Zig's safety
+features and low-level control.
 
 ## Features
 

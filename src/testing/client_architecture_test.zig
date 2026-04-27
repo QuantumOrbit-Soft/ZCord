@@ -468,6 +468,55 @@ test "GatewayClient delegates gateway protocol policy" {
     assert_source_absent(@embedFile("../discord/gateway_client.zig"), "fn validate_event_name");
 }
 
+test "Embed models live in a dedicated module" {
+    const models = @import("../models/mod.zig");
+    const embed = @import("../models/embed.zig");
+
+    comptime {
+        if (!@hasDecl(embed, "Embed")) {
+            @compileError("Embed model must live in models/embed.zig");
+        }
+        if (!@hasDecl(embed, "EmbedField")) {
+            @compileError("EmbedField model must live in models/embed.zig");
+        }
+    }
+
+    try std.testing.expect(models.Embed == embed.Embed);
+    try std.testing.expect(models.EmbedField == embed.EmbedField);
+
+    assert_source_absent(@embedFile("../models/types.zig"), "pub const Embed = struct");
+    assert_source_absent(@embedFile("../models/types.zig"), "pub const EmbedField = struct");
+}
+
+test "Shared model groups live in dedicated modules" {
+    const models = @import("../models/mod.zig");
+    const snowflake = @import("../models/snowflake.zig");
+    const emoji = @import("../models/emoji.zig");
+    const component = @import("../models/component.zig");
+    const message_reaction = @import("../models/message_reaction.zig");
+    const application_command = @import("../models/application_command.zig");
+
+    try std.testing.expect(models.Emoji == emoji.Emoji);
+    try std.testing.expect(models.Button == component.Button);
+    try std.testing.expect(models.ActionRow == component.ActionRow);
+    try std.testing.expect(models.ButtonStyle == component.ButtonStyle);
+    try std.testing.expect(models.MessageReaction == message_reaction.MessageReaction);
+    try std.testing.expect(models.ApplicationCommand == application_command.ApplicationCommand);
+    try std.testing.expect(models.Types.Snowflake == snowflake.Snowflake);
+
+    assert_source_absent(@embedFile("../models/types.zig"), "pub const Emoji = struct");
+    assert_source_absent(@embedFile("../models/types.zig"), "pub const Button = struct");
+    assert_source_absent(@embedFile("../models/types.zig"), "pub const ActionRow = struct");
+    assert_source_absent(
+        @embedFile("../models/types.zig"),
+        "pub const ApplicationCommand = struct",
+    );
+    assert_source_absent(
+        @embedFile("../models/types.zig"),
+        "pub const MessageReaction = struct",
+    );
+}
+
 fn assert_no_erased_types(comptime source: []const u8) void {
     @setEvalBranchQuota(100_000);
 

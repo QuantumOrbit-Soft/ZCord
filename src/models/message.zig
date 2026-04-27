@@ -1,11 +1,13 @@
-const types = @import("types.zig");
+const embed = @import("embed.zig");
+const component = @import("component.zig");
+const message_reaction = @import("message_reaction.zig");
 
 id: []const u8,
 channel_id: []const u8,
 guild_id: ?[]const u8 = null,
 content: []const u8 = "",
-embeds: []const types.Embed = &.{},
-components: []const types.ActionRow = &.{},
-reactions: []const types.MessageReaction = &.{},
+embeds: []const embed.Embed = &.{},
+components: []const component.ActionRow = &.{},
+reactions: []const message_reaction.MessageReaction = &.{},
 
 pub const Message = @This();

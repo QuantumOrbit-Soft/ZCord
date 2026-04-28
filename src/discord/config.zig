@@ -1,17 +1,21 @@
 const std = @import("std");
 
 pub const default_base_url = "https://discord.com/api/v10";
+pub const default_request_body_bytes_max: u32 = 64 * 1024;
+pub const default_response_body_bytes_max: u32 = 1024 * 1024;
 
 base_url: []const u8 = default_base_url,
 token: []const u8,
 token_prefix: []const u8 = "Bot",
 user_agent: []const u8 = "ZCord/0.1",
-response_body_bytes_max: u32 = 1024 * 1024,
+request_body_bytes_max: u32 = default_request_body_bytes_max,
+response_body_bytes_max: u32 = default_response_body_bytes_max,
 
 pub const validate_error = error{
     MissingBaseUrl,
     MissingToken,
     InvalidBaseUrl,
+    InvalidRequestBodyBytesMax,
     InvalidResponseBodyBytesMax,
 };
 
@@ -40,6 +44,9 @@ pub fn validate(self: Self) validate_error!void {
         else => {},
     }
 
+    if (0 < normalized_cfg.request_body_bytes_max) {} else {
+        return error.InvalidRequestBodyBytesMax;
+    }
     if (0 < normalized_cfg.response_body_bytes_max) {} else {
         return error.InvalidResponseBodyBytesMax;
     }

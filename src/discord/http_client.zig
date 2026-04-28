@@ -7,10 +7,14 @@ const HttpRequestContext = @import("http_request_context.zig").HttpRequestContex
 const JsonBody = @import("json_body.zig").JsonBody;
 const ResponseBodyGuard = @import("response_body_guard.zig").ResponseBodyGuard;
 const UserAgentHeader = @import("user_agent_header.zig").UserAgentHeader;
+const assert = std.debug.assert;
+const sync_io = std.Options.debug_io;
 
 allocator: std.mem.Allocator,
 inner: *zrqwest.RequestClient,
 base_url: BaseUrl,
+request_body_buffer: []u8 = &.{},
+request_body_mutex: std.Io.Mutex = .init,
 response_body_bytes_max: u32,
 authorization_header: AuthorizationHeader,
 user_agent_header: UserAgentHeader,
@@ -49,10 +53,17 @@ pub fn init(
     try user_agent_header.init(allocator, config_normalized.user_agent);
     errdefer user_agent_header.deinit();
 
+    const request_body_bytes_max: usize = @intCast(config_normalized.request_body_bytes_max);
+    assert(request_body_bytes_max > 0);
+    const request_body_buffer = try allocator.alloc(u8, request_body_bytes_max);
+    errdefer allocator.free(request_body_buffer);
+
     self.* = .{
         .allocator = allocator,
         .inner = params.client,
         .base_url = base_url,
+        .request_body_buffer = request_body_buffer,
+        .request_body_mutex = .init,
         .response_body_bytes_max = config_normalized.response_body_bytes_max,
         .authorization_header = authorization_header,
         .user_agent_header = user_agent_header,
@@ -60,9 +71,11 @@ pub fn init(
 }
 
 pub fn deinit(self: *Self) void {
+    assert(self.request_body_buffer.len > 0);
     self.base_url.deinit();
     self.authorization_header.deinit();
     self.user_agent_header.deinit();
+    self.allocator.free(self.request_body_buffer);
     self.* = undefined;
 }
 
@@ -93,8 +106,11 @@ pub fn post(
     var request: HttpRequestContext = undefined;
     try self.init_request_context(&request, url_buffer[0..], path);
 
+    self.request_body_mutex.lockUncancelable(sync_io);
+    defer self.request_body_mutex.unlock(sync_io);
+
     var body: JsonBody = undefined;
-    try body.init(self.allocator, Payload, payload);
+    try body.init(self.request_body_buffer, Payload, payload);
     defer body.deinit();
 
     const response = try self.inner.post(
@@ -116,8 +132,11 @@ pub fn post_no_auth(
     var request: HttpRequestContext = undefined;
     try self.init_request_context(&request, url_buffer[0..], path);
 
+    self.request_body_mutex.lockUncancelable(sync_io);
+    defer self.request_body_mutex.unlock(sync_io);
+
     var body: JsonBody = undefined;
-    try body.init(self.allocator, Payload, payload);
+    try body.init(self.request_body_buffer, Payload, payload);
     defer body.deinit();
 
     const response = try self.inner.post(
@@ -139,8 +158,11 @@ pub fn put(
     var request: HttpRequestContext = undefined;
     try self.init_request_context(&request, url_buffer[0..], path);
 
+    self.request_body_mutex.lockUncancelable(sync_io);
+    defer self.request_body_mutex.unlock(sync_io);
+
     var body: JsonBody = undefined;
-    try body.init(self.allocator, Payload, payload);
+    try body.init(self.request_body_buffer, Payload, payload);
     defer body.deinit();
 
     const response = try self.inner.put(
@@ -176,8 +198,11 @@ pub fn patch(
     var request: HttpRequestContext = undefined;
     try self.init_request_context(&request, url_buffer[0..], path);
 
+    self.request_body_mutex.lockUncancelable(sync_io);
+    defer self.request_body_mutex.unlock(sync_io);
+
     var body: JsonBody = undefined;
-    try body.init(self.allocator, Payload, payload);
+    try body.init(self.request_body_buffer, Payload, payload);
     defer body.deinit();
 
     const response = try self.inner.patch(

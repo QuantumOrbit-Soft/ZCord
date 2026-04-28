@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const zrqwest = @import("zrqwest");
 const GatewayProtocol = @import("gateway_protocol.zig").GatewayProtocol;
 const models = @import("../models/mod.zig");
+const assert = std.debug.assert;
 
 pub const default_gateway_url = GatewayProtocol.default_gateway_url;
 pub const default_max_message_bytes = GatewayProtocol.default_max_message_bytes;
@@ -13,6 +14,7 @@ const empty_headers: []const std.http.Header = &.{};
 
 allocator: std.mem.Allocator,
 token: []u8,
+parse_storage: []u8 = &.{},
 websocket: zrqwest.WebSocketClient = undefined,
 websocket_initialized: bool = false,
 sequence: ?u64 = null,
@@ -204,18 +206,27 @@ pub fn init(
     token: []const u8,
 ) init_error!void {
     try GatewayProtocol.validate_token(token);
+    assert(token.len > 0);
 
     const owned_token = try allocator.dupe(u8, token);
+    errdefer allocator.free(owned_token);
+
+    const parse_storage = try allocator.alloc(u8, default_max_message_bytes);
+    assert(parse_storage.len == default_max_message_bytes);
 
     self.* = .{
         .allocator = allocator,
         .token = owned_token,
+        .parse_storage = parse_storage,
     };
 }
 
 pub fn deinit(self: *Self) void {
+    assert(self.token.len > 0);
+    assert(self.parse_storage.len > 0);
     self.disconnect();
     self.allocator.free(self.token);
+    self.allocator.free(self.parse_storage);
     self.* = undefined;
 }
 
@@ -276,20 +287,32 @@ fn dispatch_text(
     options: RunOptions,
 ) !void {
     try GatewayProtocol.validate_text(text, options);
+    assert(text.len <= options.max_message_bytes);
+    assert(self.parse_storage.len > 0);
+    if (options.max_message_bytes <= self.parse_storage.len) {} else {
+        return error.GatewayParseBufferTooSmall;
+    }
 
-    var parsed = try std.json.parseFromSlice(GatewayPayload, self.allocator, text, .{
+    var parse_allocator_state = std.heap.FixedBufferAllocator.init(self.parse_storage);
+    const parse_allocator = parse_allocator_state.allocator();
+    defer {
+        assert(parse_allocator_state.end_index <= self.parse_storage.len);
+        @memset(self.parse_storage[0..parse_allocator_state.end_index], 0);
+    }
+
+    const payload = try std.json.parseFromSliceLeaky(GatewayPayload, parse_allocator, text, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
+        .allocate = .alloc_if_needed,
     });
-    defer parsed.deinit();
 
-    try self.dispatch_payload(Handler, handler, parsed.value, options);
+    try self.dispatch_payload(Handler, handler, parse_allocator, payload, options);
 }
 
 fn dispatch_payload(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     payload: GatewayPayload,
     options: RunOptions,
 ) !void {
@@ -300,12 +323,13 @@ fn dispatch_payload(
     switch (payload.op) {
         @intFromEnum(Opcode.hello) => {
             const data = payload.d orelse return error.MissingGatewayPayload;
-            try self.handle_hello(data, options);
+            try self.handle_hello(data, options, parse_allocator);
         },
         @intFromEnum(Opcode.heartbeat) => try self.send_heartbeat(),
         @intFromEnum(Opcode.dispatch) => try self.dispatch_event(
             Handler,
             handler,
+            parse_allocator,
             payload,
         ),
         @intFromEnum(Opcode.heartbeat_ack) => {},
@@ -320,14 +344,13 @@ fn handle_hello(
     self: *Self,
     data: std.json.Value,
     options: RunOptions,
+    parse_allocator: std.mem.Allocator,
 ) !void {
-    var parsed = try std.json.parseFromValue(HelloData, self.allocator, data, .{
+    const hello = try std.json.parseFromValueLeaky(HelloData, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
-    self.heartbeat_interval_ms = parsed.value.heartbeat_interval;
+    self.heartbeat_interval_ms = hello.heartbeat_interval;
     try self.send_heartbeat();
     try self.send_identify(options.intents);
     try self.start_heartbeat_thread();
@@ -337,6 +360,7 @@ fn dispatch_event(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     payload: GatewayPayload,
 ) !void {
     const name = payload.t orelse return;
@@ -352,30 +376,30 @@ fn dispatch_event(
     }
 
     if (std.mem.eql(u8, name, "READY")) {
-        try self.dispatch_ready(Handler, handler, data);
+        try self.dispatch_ready(Handler, handler, parse_allocator, data);
         return;
     }
 
     if (std.mem.eql(u8, name, "MESSAGE_CREATE")) {
-        try self.dispatch_message(Handler, handler, data);
+        try self.dispatch_message(Handler, handler, parse_allocator, data);
         return;
     }
 
     if (std.mem.eql(u8, name, "MESSAGE_REACTION_ADD")) {
-        try self.dispatch_reaction(Handler, handler, data, .add);
+        try self.dispatch_reaction(Handler, handler, parse_allocator, data, .add);
         return;
     }
 
     if (std.mem.eql(u8, name, "MESSAGE_REACTION_REMOVE")) {
-        try self.dispatch_reaction(Handler, handler, data, .remove);
+        try self.dispatch_reaction(Handler, handler, parse_allocator, data, .remove);
         return;
     }
 
-    if (try self.dispatch_channel_event(Handler, handler, name, data)) return;
-    if (try self.dispatch_voice_event(Handler, handler, name, data)) return;
+    if (try self.dispatch_channel_event(Handler, handler, parse_allocator, name, data)) return;
+    if (try self.dispatch_voice_event(Handler, handler, parse_allocator, name, data)) return;
 
     if (std.mem.eql(u8, name, "INTERACTION_CREATE")) {
-        try self.dispatch_interaction(Handler, handler, data);
+        try self.dispatch_interaction(Handler, handler, parse_allocator, data);
         return;
     }
 }
@@ -384,52 +408,51 @@ fn dispatch_ready(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_ready")) {} else return;
 
-    var parsed = try std.json.parseFromValue(ReadyEvent, self.allocator, data, .{
+    const event = try std.json.parseFromValueLeaky(ReadyEvent, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
-    try Handler.on_ready(handler, parsed.value);
+    try Handler.on_ready(handler, event);
 }
 
 fn dispatch_message(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_message")) {} else return;
 
-    var parsed = try std.json.parseFromValue(MessageCreateEvent, self.allocator, data, .{
+    const event = try std.json.parseFromValueLeaky(MessageCreateEvent, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
-    try Handler.on_message(handler, parsed.value);
+    try Handler.on_message(handler, event);
 }
 
 fn dispatch_reaction(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
     action: ReactionAction,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_reaction")) {} else return;
 
-    var parsed = try std.json.parseFromValue(MessageReactionEvent, self.allocator, data, .{
+    var event = try std.json.parseFromValueLeaky(MessageReactionEvent, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
-    var event = parsed.value;
     event.action = action;
     try Handler.on_reaction(handler, event);
 }
@@ -438,26 +461,27 @@ fn dispatch_channel_event(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     name: []const u8,
     data: std.json.Value,
 ) !bool {
     if (std.mem.eql(u8, name, "CHANNEL_CREATE")) {
-        try self.dispatch_channel(Handler, handler, data, .create);
+        try self.dispatch_channel(Handler, handler, parse_allocator, data, .create);
         return true;
     }
 
     if (std.mem.eql(u8, name, "CHANNEL_UPDATE")) {
-        try self.dispatch_channel(Handler, handler, data, .update);
+        try self.dispatch_channel(Handler, handler, parse_allocator, data, .update);
         return true;
     }
 
     if (std.mem.eql(u8, name, "CHANNEL_DELETE")) {
-        try self.dispatch_channel(Handler, handler, data, .delete);
+        try self.dispatch_channel(Handler, handler, parse_allocator, data, .delete);
         return true;
     }
 
     if (std.mem.eql(u8, name, "CHANNEL_PINS_UPDATE")) {
-        try self.dispatch_channel_pins_update(Handler, handler, data);
+        try self.dispatch_channel_pins_update(Handler, handler, parse_allocator, data);
         return true;
     }
 
@@ -468,20 +492,20 @@ fn dispatch_channel(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
     action: ChannelAction,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_channel")) {} else return;
 
-    var parsed = try std.json.parseFromValue(models.Channel, self.allocator, data, .{
+    const channel = try std.json.parseFromValueLeaky(models.Channel, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
     try Handler.on_channel(handler, .{
         .action = action,
-        .channel = parsed.value,
+        .channel = channel,
     });
 }
 
@@ -489,21 +513,22 @@ fn dispatch_channel_pins_update(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_channel")) {} else return;
 
-    var parsed = try std.json.parseFromValue(
+    const pins = try std.json.parseFromValueLeaky(
         ChannelPinsUpdateEvent,
-        self.allocator,
+        parse_allocator,
         data,
-        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        .{ .ignore_unknown_fields = true },
     );
-    defer parsed.deinit();
 
     try Handler.on_channel(handler, .{
         .action = .pins_update,
-        .pins_update = parsed.value,
+        .pins_update = pins,
     });
 }
 
@@ -511,16 +536,17 @@ fn dispatch_voice_event(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     name: []const u8,
     data: std.json.Value,
 ) !bool {
     if (std.mem.eql(u8, name, "VOICE_STATE_UPDATE")) {
-        try self.dispatch_voice_state(Handler, handler, data);
+        try self.dispatch_voice_state(Handler, handler, parse_allocator, data);
         return true;
     }
 
     if (std.mem.eql(u8, name, "VOICE_SERVER_UPDATE")) {
-        try self.dispatch_voice_server(Handler, handler, data);
+        try self.dispatch_voice_server(Handler, handler, parse_allocator, data);
         return true;
     }
 
@@ -531,19 +557,19 @@ fn dispatch_voice_state(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_voice")) {} else return;
 
-    var parsed = try std.json.parseFromValue(VoiceStateEvent, self.allocator, data, .{
+    const state = try std.json.parseFromValueLeaky(VoiceStateEvent, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
     try Handler.on_voice(handler, .{
         .action = .state_update,
-        .state = parsed.value,
+        .state = state,
     });
 }
 
@@ -551,21 +577,22 @@ fn dispatch_voice_server(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
 ) !void {
+    _ = self;
     if (comptime @hasDecl(Handler, "on_voice")) {} else return;
 
-    var parsed = try std.json.parseFromValue(
+    const server = try std.json.parseFromValueLeaky(
         VoiceServerUpdateEvent,
-        self.allocator,
+        parse_allocator,
         data,
-        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        .{ .ignore_unknown_fields = true },
     );
-    defer parsed.deinit();
 
     try Handler.on_voice(handler, .{
         .action = .server_update,
-        .server = parsed.value,
+        .server = server,
     });
 }
 
@@ -573,38 +600,38 @@ fn dispatch_interaction(
     self: *Self,
     comptime Handler: type,
     handler: *Handler,
+    parse_allocator: std.mem.Allocator,
     data: std.json.Value,
 ) !void {
+    _ = self;
     const handles_slash = comptime @hasDecl(Handler, "on_slash_command");
     const handles_component = comptime @hasDecl(Handler, "on_component");
     const handles_modal = comptime @hasDecl(Handler, "on_modal_submit");
     if (comptime handles_slash or handles_component or handles_modal) {} else return;
 
-    var parsed = try std.json.parseFromValue(InteractionCreateEvent, self.allocator, data, .{
+    const interaction = try std.json.parseFromValueLeaky(InteractionCreateEvent, parse_allocator, data, .{
         .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
     });
-    defer parsed.deinit();
 
-    const command_data = parsed.value.data orelse return;
+    const command_data = interaction.data orelse return;
 
-    if (parsed.value.type == slash_command_interaction_type) {
+    if (interaction.type == slash_command_interaction_type) {
         if (comptime handles_slash) {
-            try dispatch_slash_command(Handler, handler, parsed.value, command_data);
+            try dispatch_slash_command(Handler, handler, interaction, command_data);
         }
         return;
     }
 
-    if (parsed.value.type == component_interaction_type) {
+    if (interaction.type == component_interaction_type) {
         if (comptime handles_component) {
-            try dispatch_component(Handler, handler, parsed.value, command_data);
+            try dispatch_component(Handler, handler, interaction, command_data);
         }
         return;
     }
 
-    if (parsed.value.type == modal_submit_interaction_type) {
+    if (interaction.type == modal_submit_interaction_type) {
         if (comptime handles_modal) {
-            try dispatch_modal_submit(Handler, handler, parsed.value, command_data);
+            try dispatch_modal_submit(Handler, handler, interaction, command_data);
         }
         return;
     }
@@ -684,7 +711,7 @@ fn interaction_data_string(data: std.json.Value, key: []const u8) ?[]const u8 {
 }
 
 fn send_identify(self: *Self, intents: u32) !void {
-    std.debug.assert(self.token.len > 0);
+    assert(self.token.len > 0);
 
     try self.websocket.send_json(.{
         .op = @intFromEnum(Opcode.identify),

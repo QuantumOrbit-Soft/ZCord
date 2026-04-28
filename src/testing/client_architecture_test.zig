@@ -61,7 +61,7 @@ test "DiscordClient.init accepts external zrqwest client" {
 test "DiscordClient keeps borrowed transport and owned runtime state" {
     comptime {
         const fields = @typeInfo(zcord.DiscordClient).@"struct".fields;
-        try std.testing.expectEqual(@as(usize, 10), fields.len);
+        try std.testing.expectEqual(@as(usize, 14), fields.len);
         try std.testing.expectEqualStrings("allocator", fields[0].name);
         try std.testing.expectEqualStrings("client", fields[1].name);
         try std.testing.expectEqualStrings("http", fields[2].name);
@@ -72,6 +72,10 @@ test "DiscordClient keeps borrowed transport and owned runtime state" {
         try std.testing.expectEqualStrings("slash_commands", fields[7].name);
         try std.testing.expectEqualStrings("callbacks", fields[8].name);
         try std.testing.expectEqualStrings("callback_runtime", fields[9].name);
+        try std.testing.expectEqualStrings("callback_jobs", fields[10].name);
+        try std.testing.expectEqualStrings("callback_payload_storage", fields[11].name);
+        try std.testing.expectEqualStrings("callback_payload_bytes_max", fields[12].name);
+        try std.testing.expectEqualStrings("callback_job_pool_mutex", fields[13].name);
     }
 }
 

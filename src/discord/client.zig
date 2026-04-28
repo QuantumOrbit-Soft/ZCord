@@ -11,6 +11,8 @@ const SlashCommandsResource = @import("../resources/slash_commands.zig").SlashCo
 const models = @import("../models/mod.zig");
 const callback_runtime_mod = @import("callback_runtime.zig");
 const event_payload_mod = @import("event_payload.zig");
+const assert = std.debug.assert;
+const sync_io = std.Options.debug_io;
 
 allocator: std.mem.Allocator,
 client: *zrqwest.RequestClient,
@@ -22,11 +24,16 @@ messages: MessagesResource,
 slash_commands: SlashCommandsResource,
 callbacks: EventCallbacks = .{},
 callback_runtime: CallbackRuntime = .{},
+callback_jobs: []CallbackJob = &.{},
+callback_payload_storage: []u8 = &.{},
+callback_payload_bytes_max: u32 = 0,
+callback_job_pool_mutex: std.Io.Mutex = .init,
 
 pub const DiscordClient = @This();
 const Self = @This();
 const CallbackRuntime = callback_runtime_mod.CallbackRuntime;
 const CallbackTask = callback_runtime_mod.CallbackTask;
+pub const callback_payload_bytes_max_default: u32 = 64 * 1024;
 
 pub const init_params = struct {
     allocator: std.mem.Allocator,
@@ -35,9 +42,11 @@ pub const init_params = struct {
     base_url: []const u8 = DiscordConfig.default_base_url,
     token_prefix: []const u8 = "Bot",
     user_agent: []const u8 = "ZCord/0.1",
-    response_body_bytes_max: u32 = 1024 * 1024,
+    request_body_bytes_max: u32 = DiscordConfig.default_request_body_bytes_max,
+    response_body_bytes_max: u32 = DiscordConfig.default_response_body_bytes_max,
     callback_thread_count: u16 = callback_thread_count_default,
     callback_queue_capacity: u16 = callback_queue_capacity_default,
+    callback_payload_bytes_max: u32 = callback_payload_bytes_max_default,
 };
 
 const InteractionIdentity = struct {
@@ -297,11 +306,12 @@ const EventCallbacks = struct {
 
 const CallbackJob = struct {
     task: CallbackTask,
-    allocator: std.mem.Allocator,
-    arena: std.heap.ArenaAllocator,
     discord: *Self,
     callback: EventCallback,
     payload: EventPayload,
+    payload_allocator: std.heap.FixedBufferAllocator,
+    payload_storage: []u8,
+    active: bool = false,
 };
 
 const CallbackHandler = struct {
@@ -362,6 +372,7 @@ pub fn init(
         .token = params.token,
         .token_prefix = params.token_prefix,
         .user_agent = params.user_agent,
+        .request_body_bytes_max = params.request_body_bytes_max,
         .response_body_bytes_max = params.response_body_bytes_max,
     };
     const config_normalized = config.normalized();
@@ -378,6 +389,10 @@ pub fn init(
         .slash_commands = undefined,
         .callbacks = .{},
         .callback_runtime = .{},
+        .callback_jobs = &.{},
+        .callback_payload_storage = &.{},
+        .callback_payload_bytes_max = 0,
+        .callback_job_pool_mutex = .init,
     };
     errdefer self.* = undefined;
 
@@ -400,17 +415,97 @@ pub fn init(
         params.callback_thread_count,
         params.callback_queue_capacity,
     );
+    errdefer self.callback_runtime.deinit();
+
+    try self.init_callback_job_pool(.{
+        .allocator = params.allocator,
+        .job_count = params.callback_queue_capacity,
+        .payload_bytes_max = params.callback_payload_bytes_max,
+    });
 }
 
 pub fn deinit(self: *Self) void {
     self.gateway.deinit();
     self.callback_runtime.deinit();
+    self.deinit_callback_job_pool();
     self.messages.deinit();
     self.slash_commands.deinit();
     self.channels.deinit();
     self.users.deinit();
     self.http.deinit();
     self.* = undefined;
+}
+
+const init_callback_job_pool_params = struct {
+    allocator: std.mem.Allocator,
+    job_count: u16,
+    payload_bytes_max: u32,
+};
+
+fn init_callback_job_pool(
+    self: *Self,
+    params: init_callback_job_pool_params,
+) !void {
+    assert(self.callback_jobs.len == 0);
+    assert(self.callback_payload_storage.len == 0);
+
+    if (0 < params.job_count) {} else return error.InvalidCallbackJobCount;
+    if (0 < params.payload_bytes_max) {} else return error.InvalidCallbackPayloadBytesMax;
+
+    const job_count: usize = @intCast(params.job_count);
+    const payload_bytes_max: usize = @intCast(params.payload_bytes_max);
+    const payload_storage_bytes = std.math.mul(
+        usize,
+        job_count,
+        payload_bytes_max,
+    ) catch return error.CallbackPayloadStorageTooLarge;
+
+    const jobs = try params.allocator.alloc(CallbackJob, job_count);
+    errdefer params.allocator.free(jobs);
+
+    const payload_storage = try params.allocator.alloc(u8, payload_storage_bytes);
+    errdefer params.allocator.free(payload_storage);
+
+    for (jobs, 0..) |*job, index| {
+        const payload_start = index * payload_bytes_max;
+        const payload_end = payload_start + payload_bytes_max;
+        const payload_slice = payload_storage[payload_start..payload_end];
+
+        job.* = .{
+            .task = .{
+                .run = run_callback_task,
+                .destroy = destroy_callback_task,
+            },
+            .discord = self,
+            .callback = undefined,
+            .payload = undefined,
+            .payload_allocator = std.heap.FixedBufferAllocator.init(payload_slice),
+            .payload_storage = payload_slice,
+            .active = false,
+        };
+    }
+
+    self.callback_jobs = jobs;
+    self.callback_payload_storage = payload_storage;
+    self.callback_payload_bytes_max = params.payload_bytes_max;
+}
+
+fn deinit_callback_job_pool(self: *Self) void {
+    if (self.callback_jobs.len == 0) return;
+
+    const payload_bytes_max: usize = @intCast(self.callback_payload_bytes_max);
+
+    for (self.callback_jobs) |*job| {
+        assert(!job.active);
+        assert(job.payload_storage.len == payload_bytes_max);
+    }
+
+    @memset(self.callback_payload_storage, 0);
+    self.allocator.free(self.callback_payload_storage);
+    self.allocator.free(self.callback_jobs);
+    self.callback_jobs = &.{};
+    self.callback_payload_storage = &.{};
+    self.callback_payload_bytes_max = 0;
 }
 
 pub fn on(self: *Self, callback: EventCallback, event: Event) void {
@@ -597,8 +692,8 @@ fn dispatch_callback(self: *Self, event: Event, payload: EventPayload) void {
         .OnModalSubmit => self.callbacks.on_modal_submit,
     };
     const callback = callback_or_null orelse return;
-    const job = self.create_callback_job(callback, payload) catch |err| {
-        std.debug.print("ZCord callback clone failed: {}\n", .{err});
+    const job = self.create_callback_job(callback, payload) catch {
+        self.run_callback_inline(callback, payload);
         return;
     };
 
@@ -606,6 +701,15 @@ fn dispatch_callback(self: *Self, event: Event, payload: EventPayload) void {
 
     destroy_callback_task(&job.task);
     std.debug.print("ZCord callback queue full or closed for {s}\n", .{@tagName(event)});
+    self.run_callback_inline(callback, payload);
+}
+
+fn run_callback_inline(self: *Self, callback: EventCallback, payload: EventPayload) void {
+    assert(self.callback_jobs.len > 0);
+    callback(.{
+        .discord = self,
+        .payload = payload,
+    });
 }
 
 fn create_callback_job(
@@ -613,24 +717,54 @@ fn create_callback_job(
     callback: EventCallback,
     payload: EventPayload,
 ) !*CallbackJob {
-    const job = try self.allocator.create(CallbackJob);
-    errdefer self.allocator.destroy(job);
+    const job = try self.acquire_callback_job();
+    errdefer self.release_callback_job(job);
 
-    job.* = .{
-        .task = .{
+    job.callback = callback;
+    job.payload = try event_payload_mod.clone(job.payload_allocator.allocator(), payload);
+    return job;
+}
+
+fn acquire_callback_job(self: *Self) !*CallbackJob {
+    assert(self.callback_jobs.len > 0);
+    assert(self.callback_payload_bytes_max > 0);
+
+    self.callback_job_pool_mutex.lockUncancelable(sync_io);
+    defer self.callback_job_pool_mutex.unlock(sync_io);
+
+    for (self.callback_jobs) |*job| {
+        if (job.active) continue;
+
+        const payload_bytes_max: usize = @intCast(self.callback_payload_bytes_max);
+        assert(job.payload_storage.len == payload_bytes_max);
+        job.active = true;
+        job.discord = self;
+        job.callback = undefined;
+        job.payload = undefined;
+        job.task = .{
             .run = run_callback_task,
             .destroy = destroy_callback_task,
-        },
-        .allocator = self.allocator,
-        .arena = std.heap.ArenaAllocator.init(self.allocator),
-        .discord = self,
-        .callback = callback,
-        .payload = undefined,
-    };
-    errdefer job.arena.deinit();
+        };
+        job.payload_allocator = std.heap.FixedBufferAllocator.init(job.payload_storage);
+        return job;
+    }
 
-    job.payload = try event_payload_mod.clone(job.arena.allocator(), payload);
-    return job;
+    return error.CallbackJobPoolFull;
+}
+
+fn release_callback_job(self: *Self, job: *CallbackJob) void {
+    self.callback_job_pool_mutex.lockUncancelable(sync_io);
+    defer self.callback_job_pool_mutex.unlock(sync_io);
+
+    assert(job.discord == self);
+    assert(job.active);
+    assert(job.payload_allocator.end_index <= job.payload_storage.len);
+
+    @memset(job.payload_storage[0..job.payload_allocator.end_index], 0);
+    job.payload_allocator = std.heap.FixedBufferAllocator.init(job.payload_storage);
+    job.callback = undefined;
+    job.payload = undefined;
+    job.active = false;
 }
 
 fn run_callback_task(task: *CallbackTask) void {
@@ -643,10 +777,7 @@ fn run_callback_task(task: *CallbackTask) void {
 
 fn destroy_callback_task(task: *CallbackTask) void {
     const job: *CallbackJob = @fieldParentPtr("task", task);
-    const allocator = job.allocator;
-    const arena = job.arena;
-    arena.deinit();
-    allocator.destroy(job);
+    job.discord.release_callback_job(job);
 }
 
 fn sleep_test_milliseconds(milliseconds: u64) void {
@@ -723,6 +854,103 @@ test "DiscordClient dispatches registered callbacks without blocking gateway loo
 
     try std.testing.expect(Probe.done.load(.acquire));
     try std.testing.expect(Probe.content_ok.load(.acquire));
+}
+
+test "DiscordClient dispatch callback uses preallocated job payload storage" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const allocator = failing_allocator.allocator();
+
+    const Probe = struct {
+        var done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+        var content_ok: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+        fn reset() void {
+            done.store(false, .release);
+            content_ok.store(false, .release);
+        }
+
+        fn on_message(ctx: DiscordContext) void {
+            const event = ctx.message() orelse return;
+            content_ok.store(std.mem.eql(u8, event.content, "preallocated"), .release);
+            done.store(true, .release);
+        }
+    };
+    Probe.reset();
+
+    var request_client: zrqwest.RequestClient = undefined;
+    try request_client.init(allocator);
+    defer request_client.deinit();
+
+    var discord: DiscordClient = undefined;
+    try discord.init(.{
+        .allocator = allocator,
+        .client = &request_client,
+        .token = "abc",
+        .callback_thread_count = 1,
+        .callback_queue_capacity = 2,
+        .callback_payload_bytes_max = 2048,
+    });
+    defer discord.deinit();
+
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+    discord.on(Probe.on_message, .OnMessage);
+
+    discord.dispatch_callback(.OnMessage, .{ .OnMessage = .{
+        .id = "message-1",
+        .channel_id = "channel-1",
+        .content = "preallocated",
+    } });
+
+    var attempts: u16 = 0;
+    while (!Probe.done.load(.acquire) and attempts < 1000) : (attempts += 1) {
+        sleep_test_milliseconds(1);
+    }
+
+    try std.testing.expect(Probe.done.load(.acquire));
+    try std.testing.expect(Probe.content_ok.load(.acquire));
+    try std.testing.expect(!failing_allocator.has_induced_failure);
+}
+
+test "DiscordClient runs callback inline when fixed payload pool is too small" {
+    const allocator = std.testing.allocator;
+
+    const Probe = struct {
+        var called: bool = false;
+
+        fn reset() void {
+            called = false;
+        }
+
+        fn on_message(ctx: DiscordContext) void {
+            const event = ctx.message() orelse return;
+            called = std.mem.eql(u8, event.content, "payload larger than pool");
+        }
+    };
+    Probe.reset();
+
+    var request_client: zrqwest.RequestClient = undefined;
+    try request_client.init(allocator);
+    defer request_client.deinit();
+
+    var discord: DiscordClient = undefined;
+    try discord.init(.{
+        .allocator = allocator,
+        .client = &request_client,
+        .token = "abc",
+        .callback_thread_count = 1,
+        .callback_queue_capacity = 1,
+        .callback_payload_bytes_max = 1,
+    });
+    defer discord.deinit();
+
+    discord.on(Probe.on_message, .OnMessage);
+    discord.dispatch_callback(.OnMessage, .{ .OnMessage = .{
+        .id = "message-1",
+        .channel_id = "channel-1",
+        .content = "payload larger than pool",
+    } });
+
+    try std.testing.expect(Probe.called);
 }
 
 test "DiscordClient clones callback payload before parsed JSON is released" {
